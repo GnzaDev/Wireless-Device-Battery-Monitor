@@ -30,6 +30,8 @@ clean:
 
 test:
 	@mkdir -p build
+	$(CXX) $(CXXFLAGS) tests/incott_diagnostic_test.cpp src/drivers/xenta_protocol.cpp -o build/incott_diagnostic_test.exe
+	./build/incott_diagnostic_test.exe
 	$(CXX) $(CXXFLAGS) tests/astro_driver_test.cpp src/drivers/astro.cpp -o build/astro_driver_test.exe
 	./build/astro_driver_test.exe
 	$(CXX) $(CXXFLAGS) tests/steelseries_mouse_test.cpp src/drivers/steelseries.cpp -o build/steelseries_mouse_test.exe

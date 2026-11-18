@@ -850,7 +850,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // `WirelessBattery.exe --list` prints what it finds, `--dump` every HID collection.
-int ListToConsole(bool dump) {
+int ListToConsole(bool dump, bool incott = false) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!out || out == INVALID_HANDLE_VALUE) {
         if (AttachConsole(ATTACH_PARENT_PROCESS)) out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -862,13 +862,13 @@ int ListToConsole(bool dump) {
         DWORD w;
         WriteFile(out, u.data(), (DWORD)u.size(), &w, nullptr);
     };
-    if (dump) {
+    if (dump || incott) {
         // Also saved to a file: PowerShell does not wait for this windowed exe, so console output can end up
         // after the prompt or get lost, and a double-click has no console at all.
-        std::wstring text = DumpHidCollections();
+        std::wstring text = incott ? DumpIncottStatus() : DumpHidCollections();
         wchar_t path[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, path);
-        wcscat_s(path, L"WirelessBattery-dump.txt");
+        wcscat_s(path, incott ? L"WirelessBattery-incott-debug.txt" : L"WirelessBattery-dump.txt");
         HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (f != INVALID_HANDLE_VALUE) {
             std::wstring crlf;
@@ -910,6 +910,7 @@ int ListToConsole(bool dump) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    if (cmdLine && wcsstr(cmdLine, L"--debug-incott")) return ListToConsole(false, true);
     if (cmdLine && wcsstr(cmdLine, L"--list")) return ListToConsole(false);
     if (cmdLine && wcsstr(cmdLine, L"--dump")) return ListToConsole(true);
     if (cmdLine && wcsstr(cmdLine, L"--report")) {  // the "Request support for a device" window on its own

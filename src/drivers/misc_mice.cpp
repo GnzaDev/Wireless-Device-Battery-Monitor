@@ -435,25 +435,63 @@ void PollWraithW1(PollContext& ctx) {
     }
 }
 
-void PollIncott(PollContext& ctx) {
+// Optional one-shot trace; normal polling keeps the same queries, retries and acceptance rules.
+static std::wstring IncottIoResult(bool ok) {
+    if (ok) return L"OK";
+#ifdef _WIN32
+    return L"FAILED, Win32 error=" + std::to_wstring(GetLastError());
+#else
+    return L"FAILED";
+#endif
+}
+
+void PollIncott(PollContext& ctx, std::wstring* trace = nullptr) {
     for (USHORT pid : { (USHORT)0x522C, (USHORT)0x622C }) {
-        if (ctx.IsClaimed(0x093A, pid)) continue;
+        if (trace) *trace += L"\n093A:" + Hex4(pid) + L"\n";
+        if (ctx.IsClaimed(0x093A, pid)) {
+            if (trace) *trace += L"Skipped: claimed by Wraith model detection.\n";
+            continue;
+        }
         auto colls = ctx.Find(0x093A, pid, [](const HidColl& c) { return c.page() == 0xFF05 && c.featLen() >= 9; });
+        if (trace) *trace += L"Matching FF05 feature collections: " + std::to_wstring(colls.size()) + L"\n";
         std::reverse(colls.begin(), colls.end());
         for (const HidColl* c : colls) {
+            if (trace) *trace += L"IF " + std::to_wstring(c->iface) + L", usage=" + Hex4(c->usage()) +
+                L", feature bytes=" + std::to_wstring(c->featLen()) + L"\n";
+            auto start = GetTickCount64();
             HidDev d;
-            if (!d.OpenFeatureOnly(*c)) continue;
-            if (!d.SetFeature({ 0x09, 0x89 })) continue;
+            bool opened = d.OpenFeatureOnly(*c);
+            if (trace) *trace += L"OpenFeatureOnly: " + IncottIoResult(opened) + L"\n";
+            if (!opened) continue;
+            bool sent = d.SetFeature({ 0x09, 0x89 });
+            if (trace) *trace += L"SET_FEATURE 09 89 (zero padded): " + IncottIoResult(sent) + L"\n";
+            if (!sent) continue;
             std::vector<BYTE> r;
             bool ok = false;
             for (int i = 0; i < 10 && !ok; i++) {
                 Sleep(50);
-                if (!d.GetFeature(0x09, r)) break;
+                bool got = d.GetFeature(0x09, r);
+                // Capture the OS error before formatting or calling any other Windows API.
+                std::wstring result = trace ? IncottIoResult(got) : L"";
+                if (trace) {
+                    *trace += L"GET_FEATURE +" + std::to_wstring(GetTickCount64() - start) + L"ms: " + result;
+                    if (got) for (BYTE b : r) *trace += L" " + Hex4(b).substr(2);
+                    *trace += L"\n";
+                }
+                if (!got) break;
                 ok = r.size() >= 4 && r[0] == 0x09 && r[1] == 0x89 && (r[2] | r[3]) != 0;
             }
-            if (!ok) continue;
+            if (!ok) {
+                if (trace) *trace += L"Rejected: no non-stale 09 89 status reply within the existing 10 reads.\n";
+                continue;
+            }
             int pct = r[2] & 0x7F;
-            if (pct > 100) continue;
+            if (pct > 100) {
+                if (trace) *trace += L"Rejected: battery exceeds 100.\n";
+                continue;
+            }
+            if (trace) *trace += L"Accepted: " + std::to_wstring(pct) + L"%, charging=" +
+                std::to_wstring((r[2] & 0x80) != 0) + L"\n";
             bool cable = pid == 0x622C;
             DeviceStatus s;
             s.key = L"incott:" + Hex4(pid);
@@ -468,6 +506,17 @@ void PollIncott(PollContext& ctx) {
             break;
         }
     }
+}
+
+std::wstring TraceIncottStatus() {
+    PollContext ctx;
+    ctx.colls = EnumHid();
+    std::wstring trace = L"Incott diagnostic (v1.0.8-based): existing read-state commands only.\n"
+        L"Close the tray app and vendor configurator; wake the mouse before running.\n"
+        L"Wraith model detection runs first, as in normal polling.\n";
+    PollWraithW1(ctx);
+    PollIncott(ctx, &trace);
+    return trace;
 }
 
 void PollDeluxM800(PollContext& ctx) {
@@ -530,6 +579,10 @@ void PollDeluxM800(PollContext& ctx) {
 }
 
 }  // namespace
+
+std::wstring DumpIncottStatus() {
+    return TraceIncottStatus();
+}
 
 // For `--dump`: the raw input reports each Xenta status collection sends during ~6 s (three frames at the
 // usual 2 s cadence), so a model whose frames are not understood yet can be added from a user's output.

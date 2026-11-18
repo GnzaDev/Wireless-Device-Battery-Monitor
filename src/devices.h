@@ -26,3 +26,6 @@ std::vector<DeviceStatus> PollAllDevices();
 
 // Prints every HID collection (for adding support for new devices).
 std::wstring DumpHidCollections();
+
+// One-shot trace of the existing Incott feature query (no settings writes).
+std::wstring DumpIncottStatus();

@@ -183,6 +183,7 @@ anywhere and run `WirelessBattery.exe`.
 ## Command line
 
 ```
+WirelessBattery.exe --debug-incott  # trace the existing Incott status query; saved to %TEMP%\WirelessBattery-incott-debug.txt
 WirelessBattery.exe --list     # print every device and its battery level, then exit
 WirelessBattery.exe --dump     # every HID collection, HID devices that could not be opened, all USB devices (also ones
                                # without a HID interface) and Bluetooth devices; also saved to %TEMP%\WirelessBattery-dump.txt
