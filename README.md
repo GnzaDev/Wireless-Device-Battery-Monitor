@@ -197,7 +197,8 @@ then run `WirelessBattery.exe --debug-incott`. The trace is saved to `%TEMP%\Wir
 The receiver's vendor input collection is opened before the existing status query, so pushed battery
 reports can be queued during the query. Feature reads and passive listening share one 900 ms budget
 per matching collection. No settings are changed. A push arriving outside this window is missed;
-this is not a persistent listener, and wireless support is not yet verified on the G23 V2 Pro.
+this is not a persistent listener. A live G23 V2 Pro 8K push (`09 2A 20 08 00 1F 1F 01 ...`)
+was verified as 42% battery; polling can still miss pushes outside the listen window.
 
 **Device not shown?** Right-click the widget or tray icon and choose **Request support for a device...**. Pick the device, check
 what will be sent (it is shown word for word: the device name, its type, its USB/HID ids and interface layout, and your optional
