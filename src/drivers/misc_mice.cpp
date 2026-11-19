@@ -435,7 +435,7 @@ void PollWraithW1(PollContext& ctx) {
     }
 }
 
-// Optional one-shot trace; normal polling keeps the same queries, retries and acceptance rules.
+// Optional one-shot trace for both feature replies and passive status pushes.
 static std::wstring IncottIoResult(bool ok) {
     if (ok) return L"OK";
 #ifdef _WIN32
@@ -445,6 +445,18 @@ static std::wstring IncottIoResult(bool ok) {
 #endif
 }
 
+// Passive layout from romkazor/IncottHIDApp device.go (parseStatus / mouseWorker),
+// cross-checked with incottwebdriver.netlify.app/js/chunk-v1013.js (irServer):
+// [09][battery|charge][dpi<<4|rate][flags]. Bit 7 of flags is a profile-switch event, not battery status.
+// Unlike a feature reply, an input push has no 89 command echo before the battery.
+bool ParseIncottPush(const std::vector<BYTE>& r, BYTE& battery) {
+    if (r.size() < 4 || r[0] != 0x09 || (r[1] & 0x7F) > 100) return false;
+    if ((r[2] & 0x0F) > 6 || (r[2] >> 4) > 5 || (r[3] & 0xBF) != 0) return false;
+    if ((r[1] | r[2] | r[3]) == 0) return false;  // empty receiver status, not a real 0% reading
+    battery = r[1];
+    return true;
+}
+
 void PollIncott(PollContext& ctx, std::wstring* trace = nullptr) {
     for (USHORT pid : { (USHORT)0x522C, (USHORT)0x622C }) {
         if (trace) *trace += L"\n093A:" + Hex4(pid) + L"\n";
@@ -452,23 +464,30 @@ void PollIncott(PollContext& ctx, std::wstring* trace = nullptr) {
             if (trace) *trace += L"Skipped: claimed by Wraith model detection.\n";
             continue;
         }
-        auto colls = ctx.Find(0x093A, pid, [](const HidColl& c) { return c.page() == 0xFF05 && c.featLen() >= 9; });
+        auto colls = ctx.Find(0x093A, pid, [](const HidColl& c) { return c.page() == 0xFF05 && c.usage() == 1 && c.featLen() >= 9; });
         if (trace) *trace += L"Matching FF05 feature collections: " + std::to_wstring(colls.size()) + L"\n";
         std::reverse(colls.begin(), colls.end());
         for (const HidColl* c : colls) {
             if (trace) *trace += L"IF " + std::to_wstring(c->iface) + L", usage=" + Hex4(c->usage()) +
                 L", feature bytes=" + std::to_wstring(c->featLen()) + L"\n";
             auto start = GetTickCount64();
+            const auto deadline = start + 900;  // one absolute budget; unrelated pushes never extend it
+            // Open before the query so a push triggered during GET_FEATURE retries is queued.
+            // Read-only access to this vendor collection: never open the keyboard/mouse input collections.
+            HidDev input;
+            bool listening = false;
+            if (pid == 0x522C && c->inLen() >= 4) {
+                listening = input.OpenReadOnly(*c);
+                if (trace) *trace += L"OpenReadOnly (passive status): " + IncottIoResult(listening) + L"\n";
+            }
             HidDev d;
             bool opened = d.OpenFeatureOnly(*c);
             if (trace) *trace += L"OpenFeatureOnly: " + IncottIoResult(opened) + L"\n";
-            if (!opened) continue;
-            bool sent = d.SetFeature({ 0x09, 0x89 });
+            bool sent = opened && d.SetFeature({ 0x09, 0x89 });
             if (trace) *trace += L"SET_FEATURE 09 89 (zero padded): " + IncottIoResult(sent) + L"\n";
-            if (!sent) continue;
             std::vector<BYTE> r;
             bool ok = false;
-            for (int i = 0; i < 10 && !ok; i++) {
+            for (int i = 0; sent && i < 10 && !ok && GetTickCount64() < deadline; i++) {
                 Sleep(50);
                 bool got = d.GetFeature(0x09, r);
                 // Capture the OS error before formatting or calling any other Windows API.
@@ -481,25 +500,47 @@ void PollIncott(PollContext& ctx, std::wstring* trace = nullptr) {
                 if (!got) break;
                 ok = r.size() >= 4 && r[0] == 0x09 && r[1] == 0x89 && (r[2] | r[3]) != 0;
             }
-            if (!ok) {
-                if (trace) *trace += L"Rejected: no non-stale 09 89 status reply within the existing 10 reads.\n";
-                continue;
-            }
-            int pct = r[2] & 0x7F;
-            if (pct > 100) {
+            BYTE battery = ok ? r[2] : 0;
+            bool pushed = false;
+            if (ok && (battery & 0x7F) > 100) {
                 if (trace) *trace += L"Rejected: battery exceeds 100.\n";
+                ok = false;
+            }
+            if (!ok) {
+                if (trace) *trace += L"Feature query has no valid battery; trying passive input status.\n";
+                while (listening) {
+                    auto now = GetTickCount64();
+                    if (now >= deadline) break;
+                    int n = input.Read(r, (int)(deadline - now));
+                    if (n < 0) break;
+                    if (trace) {
+                        *trace += L"INPUT +" + std::to_wstring(GetTickCount64() - start) + L"ms:";
+                        for (BYTE b : r) *trace += L" " + Hex4(b).substr(2);
+                        *trace += L"\n";
+                    }
+                    if (ParseIncottPush(r, battery)) {
+                        ok = pushed = true;
+                        if (trace) *trace += L"Using passive status push.\n";
+                        break;
+                    }
+                    if (trace) *trace += L"Ignored: invalid input status.\n";
+                }
+            }
+            if (!ok) {
+                if (trace) *trace += L"No valid Incott battery within the 900 ms collection budget.\n";
                 continue;
             }
+            int pct = battery & 0x7F;
             if (trace) *trace += L"Accepted: " + std::to_wstring(pct) + L"%, charging=" +
-                std::to_wstring((r[2] & 0x80) != 0) + L"\n";
+                std::to_wstring((battery & 0x80) != 0) + L"\n";
             bool cable = pid == 0x622C;
             DeviceStatus s;
             s.key = L"incott:" + Hex4(pid);
             s.name = L"Incott mouse";  // the ids are shared by the G23 V2 and the G24
             s.kind = DeviceKind::Mouse;
             s.via = cable ? L"USB cable" : L"2.4 GHz receiver";
-            s.charging = (r[2] & 0x80) != 0;
-            s.connected = cable || pct > 0;  // 0 from the dongle: the mouse is off or out of range
+            s.charging = (battery & 0x80) != 0;
+            s.connected = cable || pct > 0 || s.charging || pushed;  // a valid push proves the mouse is online
             if (s.connected) s.percent = pct;
             if (!cable) s.graceSec = 1800;  // keep the last value if a sleeping mouse stops answering
             ctx.Add(s, 0x093A, pid);

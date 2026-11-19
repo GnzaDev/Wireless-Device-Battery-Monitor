@@ -6,12 +6,19 @@
 
 namespace {
 bool openOk, sendOk, getOk;
-int reads, sends;
+int reads, sends, inputOpens, inputReads;
+bool inputOk;
+int readDelay, lastTimeout;
 std::vector<BYTE> reply;
+std::vector<std::vector<BYTE>> pushes;
 
 PollContext Context() {
     openOk = sendOk = getOk = true;
-    reads = sends = 0;
+    reads = sends = inputOpens = inputReads = 0;
+    inputOk = true;
+    readDelay = 0;
+    lastTimeout = 901;
+    pushes.clear();
     reply = {0x09, 0x89, 42, 1, 0, 0, 0, 0, 0};
     PollContext ctx;
     HidColl c;
@@ -21,6 +28,7 @@ PollContext Context() {
     c.caps.UsagePage = 0xFF05;
     c.caps.Usage = 1;
     c.caps.FeatureReportByteLength = 9;
+    c.caps.InputReportByteLength = 33;
     ctx.colls.push_back(c);
     return ctx;
 }
@@ -36,9 +44,23 @@ bool HidDev::OpenFeatureOnly(const HidColl& c) {
 }
 void HidDev::Close() {}
 bool HidDev::Open(const HidColl&) { assert(false); return false; }
-bool HidDev::OpenReadOnly(const HidColl&) { assert(false); return false; }
+bool HidDev::OpenReadOnly(const HidColl& c) {
+    // The listener must be opened before the feature query, on the known vendor collection only.
+    assert(sends == 0 && c.page() == 0xFF05 && c.usage() == 1);
+    ++inputOpens;
+    return inputOk;
+}
 void HidDev::Flush() { assert(false); }
-int HidDev::Read(std::vector<BYTE>&, int) { assert(false); return -1; }
+int HidDev::Read(std::vector<BYTE>& out, int timeout) {
+    assert(timeout > 0 && timeout <= 900 && timeout <= lastTimeout);
+    lastTimeout = timeout;
+    if (readDelay) Sleep(readDelay);
+    ++inputReads;
+    if (pushes.empty()) return -1;
+    out = pushes.front();
+    pushes.erase(pushes.begin());
+    return (int)out.size();
+}
 bool HidDev::Write(const std::vector<BYTE>&, int) { assert(false); return false; }
 std::vector<HidColl> EnumHid() { return {}; }
 int Clamp100(int n) { return n < 0 ? 0 : n > 100 ? 100 : n; }
@@ -88,7 +110,7 @@ int main() {
     ctx = Context(); trace.clear(); reply = {9, 0x89, 0, 0};
     PollIncott(ctx, &trace);
     assert(ctx.out.empty() && reads == 10);
-    Contains(trace, L"Rejected: no non-stale");
+    Contains(trace, L"No valid Incott battery");
 
     ctx = Context(); trace.clear(); reply[2] = 127;
     PollIncott(ctx, &trace);
@@ -108,5 +130,60 @@ int main() {
     ctx = Context();
     PollIncott(ctx);
     assert(ctx.out.size() == 1 && ctx.out[0].percent == 42);
-    puts("Incott diagnostic: 9 scenarios passed");
+    assert(inputReads == 0);  // successful feature reply does not wait for a push
+
+    ctx = Context(); trace.clear(); reply = {9, 0x89, 0, 0};
+    pushes = {{9, 40, 0x24, 0}};
+    PollIncott(ctx, &trace);
+    assert(ctx.out.size() == 1 && ctx.out[0].percent == 40 && !ctx.out[0].charging);
+    assert(inputOpens == 1 && inputReads == 1);
+    Contains(trace, L"Using passive status push");
+
+    ctx = Context(); trace.clear(); getOk = false;
+    pushes = {{9, (BYTE)(128 | 42), 0x24, 0}};
+    PollIncott(ctx, &trace);
+    assert(ctx.out.size() == 1 && ctx.out[0].percent == 42 && ctx.out[0].charging);
+
+    ctx = Context(); trace.clear(); getOk = false;
+    pushes = {{8, 40, 0x24, 0}, {9, 127, 0x24, 0}, {9, 40, 0x27, 0},
+              {9, 40, 0x64, 0}, {9, 40, 0x24, 1}, {9, 0, 0, 0}, {9}, {9, 41, 0x24, 0}};
+    PollIncott(ctx, &trace);
+    assert(ctx.out.size() == 1 && ctx.out[0].percent == 41 && inputReads == 8);
+    Contains(trace, L"Ignored: invalid input status");
+
+    ctx = Context(); trace.clear(); getOk = false; inputOk = false;
+    PollIncott(ctx, &trace);
+    assert(ctx.out.empty() && inputReads == 0);
+
+    ctx = Context(); trace.clear(); getOk = false;
+    ctx.colls[0].pid = 0x622C;
+    PollIncott(ctx, &trace);
+    assert(ctx.out.empty() && inputOpens == 0);  // wired behavior is unchanged
+
+    ctx = Context(); trace.clear(); getOk = false;
+    pushes = {{9, 0x80, 0x24, 0}};
+    PollIncott(ctx, &trace);
+    assert(ctx.out.size() == 1 && ctx.out[0].percent == 0 && ctx.out[0].charging && ctx.out[0].connected);
+
+    ctx = Context(); trace.clear(); getOk = false;
+    ctx.colls[0].caps.Usage = 2;
+    PollIncott(ctx, &trace);
+    assert(ctx.out.empty() && inputOpens == 0 && sends == 0);
+
+    ctx = Context(); trace.clear(); getOk = false;
+    pushes.assign(100, {8, 40, 0x24, 0});
+    readDelay = 10;
+    PollIncott(ctx, &trace);
+    assert(ctx.out.empty() && inputReads < 100 && !pushes.empty());
+    Contains(trace, L"900 ms collection budget");  // unrelated packets cannot restart the deadline
+
+    BYTE battery = 0;
+    assert(!ParseIncottPush({9, 40, 0x24, 0x80}, battery));  // web driver's profile-switch event
+
+    ctx = Context(); trace.clear(); getOk = false;
+    pushes = {{9, 0, 0x24, 0}};
+    PollIncott(ctx, &trace);
+    assert(ctx.out.size() == 1 && ctx.out[0].percent == 0 && !ctx.out[0].charging && ctx.out[0].connected);
+
+    puts("Incott diagnostic and passive fallback: 19 scenarios passed");
 }

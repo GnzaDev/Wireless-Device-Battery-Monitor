@@ -113,7 +113,7 @@ Hover for details. Click for the menu: every device (click one to hide or show i
 | **Motospeed / Delux / Ajazz** | Motospeed X6, Delux M900 Pro (Xenta models 30/50; legacy 3D), Delux M800 Pro, Ajazz AJ179 family; AJ159 and other AJ-series mice on the 3151 receiver; AJ139 V2 MC (`A8A5:2255` receiver, `A8A4:2255` cable) | Vendor reports (M900 Pro: passive Xenta events 40/41; AJ-series: 0xF7 status poll, then feature report 0x05) |
 | **Rapoo VT** | VT3 Max Gen 2 (tested); VT9 Gen 2 (tested); other Nordic 54L VT mice exposing the same status interface; legacy VT3 Pro (experimental); VT1 Pro Max (from the owner's USB captures) | Passive HID status report `07` on `FF00:0002` (16 or 19 bytes); legacy `BB` restricted to VT3 Pro `1215/4415` and VT1 Pro Max `1233/4433`. Receiver and USB cable, with charging state |
 | **Motospeed / Delux / Ajazz** | Motospeed X6, Delux M900 Pro, Delux M800 Pro, Ajazz AJ179 family; AJ159 and other AJ-series mice on the 3151 receiver; AJ139 V2 MC (`A8A5:2255` receiver, `A8A4:2255` cable) | Vendor reports (Delux: passive status broadcasts or feature query; AJ-series: 0xF7 status poll, then feature report 0x05) |
-| **Incott** | G23 V2 / G24 (`093A:522C` receiver, `093A:622C` cable) | Read-only status feature report 09 |
+| **Incott** | G23 V2 / G24 (`093A:522C` receiver, `093A:622C` cable); G23 V2 Pro 8K receiver fallback is experimental | Read-only status feature report 09; receiver also listens for passive input status when the feature reply has no valid battery |
 | **Attack Shark and other Chinese brands** | Rongyuan receivers (81 models: Attack Shark R3, K86, X82 PRO HE, Ajazz keyboards, some MSI and others; the K86 over Bluetooth is shown as a keyboard); Xenta receivers (Attack Shark X6 / R1, X11, X3 Max, V3 Pro, V6); Semico 1A2C keyboards (Attack Shark X98 on `1A2C:8FFF` dongle, tested, and `1A2C:A034` cable; AJAZZ AK820 Max Plus on `1A2C:8FFF` / `1A2C:A036`) | Rongyuan status report; Xenta passive broadcasts; Semico read-only `0x0E` status query (`AA 55 CC 33` on `FF02:0002`; charging flag omitted because X98 reports `state=1` both on battery and while charging) |
 | **Wraith** | W1 / W1 Freestyle (`093A:522C` receiver, `093A:622C` cable; same ids as Incott, told apart by the model code) | Read-only per-button reads `86` (feature report 09) over all buttons, then the pushed status input report 09 |
 | **Fantech** | Helios Go XD5 (wired `25A7:FA7B`, 2.4 GHz dongle `25A7:FA7C`) | Vendor feature report `08`, command `04`, sum-to-`0x55` checksum |
@@ -191,6 +191,13 @@ WirelessBattery.exe --report   # open the "Request support for a device" window
 WirelessBattery.exe --demo     # sample devices of every brand instead of real ones (screenshots, checking colors)
 WirelessBattery.exe --quit     # close the running instance
 ```
+
+**Incott 8K receiver (experimental in this fork):** close the Incott web configurator, wake the mouse,
+then run `WirelessBattery.exe --debug-incott`. The trace is saved to `%TEMP%\WirelessBattery-incott-debug.txt`.
+The receiver's vendor input collection is opened before the existing status query, so pushed battery
+reports can be queued during the query. Feature reads and passive listening share one 900 ms budget
+per matching collection. No settings are changed. A push arriving outside this window is missed;
+this is not a persistent listener, and wireless support is not yet verified on the G23 V2 Pro.
 
 **Device not shown?** Right-click the widget or tray icon and choose **Request support for a device...**. Pick the device, check
 what will be sent (it is shown word for word: the device name, its type, its USB/HID ids and interface layout, and your optional
@@ -331,6 +338,7 @@ The protocols come from these projects' research:
 - [LGSTrayBattery-MotospeedX6](https://github.com/Jacobz888/LGSTrayBattery-MotospeedX6), [omarchy-delux-m900](https://github.com/AeonArcHQ/omarchy-delux-m900), [aj179-linux](https://github.com/Rockeyxx/aj179-linux): Motospeed, Delux, Ajazz
 - [AreYouLowBattery](https://github.com/ryan-mant/AreYouLowBattery): CompX receiver reports for Delux M900 Pro
 - [ajazz-aj139-macos](https://github.com/werquess/ajazz-aj139-macos) and [AjazzAJ139V2](https://github.com/nico2525nn/AjazzAJ139V2): Ajazz AJ139 V2
+- [IncottHIDApp](https://github.com/romkazor/IncottHIDApp) (`device.go`, passive battery layout) and [Incott web driver](https://incottwebdriver.netlify.app/) (`irServer`, status versus profile-switch events): experimental Incott receiver input fallback
 - [Incott-Manager](https://github.com/OmarK6/Incott-Manager), [incott-mouse-app](https://github.com/HeHaoren/incott-mouse-app) and [MouseBattery](https://github.com/FelixNg21/MouseBattery): Incott
 - The Wraith web driver ([w1.software](https://www.w1.software/)): Wraith W1
 - OpenRazer PR #2794 and [omarchy-blackshark-v3](https://github.com/ReedME/omarchy-blackshark-v3): BlackShark V3
