@@ -146,7 +146,7 @@ int main() {
 
     ctx = Context(); trace.clear(); getOk = false;
     pushes = {{8, 40, 0x24, 0}, {9, 127, 0x24, 0}, {9, 40, 0x27, 0},
-              {9, 40, 0x64, 0}, {9, 40, 0x24, 1}, {9, 0, 0, 0}, {9}, {9, 41, 0x24, 0}};
+              {9, 40, 0x64, 0}, {9, 40, 0x24, 0x80}, {9, 0, 0, 0}, {9}, {9, 41, 0x24, 0}};
     PollIncott(ctx, &trace);
     assert(ctx.out.size() == 1 && ctx.out[0].percent == 41 && inputReads == 8);
     Contains(trace, L"Ignored: invalid input status");
@@ -185,5 +185,17 @@ int main() {
     PollIncott(ctx, &trace);
     assert(ctx.out.size() == 1 && ctx.out[0].percent == 0 && !ctx.out[0].charging && ctx.out[0].connected);
 
-    puts("Incott diagnostic and passive fallback: 19 scenarios passed");
+    // Exact owner's G23 V2 Pro 8K push: low flag bits and later telemetry bytes are not reserved zeros.
+    ctx = Context(); trace.clear(); reply = {9, 0x89, 0, 0, 0, 0, 0, 0, 0x5A};
+    std::vector<BYTE> captured(33, 0);
+    captured[0] = 0x09; captured[1] = 0x2A; captured[2] = 0x20; captured[3] = 0x08;
+    captured[5] = 0x1F; captured[6] = 0x1F; captured[7] = 0x01;
+    pushes = {captured};
+    PollIncott(ctx, &trace);
+    assert(ctx.out.size() == 1 && ctx.out[0].percent == 42 && !ctx.out[0].charging);
+    assert(ctx.out[0].connected && ctx.out[0].via == L"2.4 GHz receiver");
+    Contains(trace, L"Using passive status push");
+    Contains(trace, L"Accepted: 42%");
+
+    puts("Incott diagnostic and passive fallback: 20 scenarios passed");
 }

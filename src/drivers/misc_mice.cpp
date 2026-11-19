@@ -451,7 +451,9 @@ static std::wstring IncottIoResult(bool ok) {
 // Unlike a feature reply, an input push has no 89 command echo before the battery.
 bool ParseIncottPush(const std::vector<BYTE>& r, BYTE& battery) {
     if (r.size() < 4 || r[0] != 0x09 || (r[1] & 0x7F) > 100) return false;
-    if ((r[2] & 0x0F) > 6 || (r[2] >> 4) > 5 || (r[3] & 0xBF) != 0) return false;
+    // The web driver treats only bit 7 as a profile-switch event. Other bits are valid telemetry:
+    // a G23 V2 Pro 8K capture has flags=08 (09 2A 20 08 00 1F 1F 01 ...), battery=42%.
+    if ((r[2] & 0x0F) > 6 || (r[2] >> 4) > 5 || (r[3] & 0x80) != 0) return false;
     if ((r[1] | r[2] | r[3]) == 0) return false;  // empty receiver status, not a real 0% reading
     battery = r[1];
     return true;
