@@ -30,7 +30,9 @@ clean:
 
 test:
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) tests/incott_diagnostic_test.cpp src/drivers/xenta_protocol.cpp -o build/incott_diagnostic_test.exe
+	$(CXX) $(CXXFLAGS) tests/incott_receiver_test.cpp src/drivers/incott_receiver.cpp -o build/incott_receiver_test.exe
+	./build/incott_receiver_test.exe
+	$(CXX) $(CXXFLAGS) tests/incott_diagnostic_test.cpp src/drivers/xenta_protocol.cpp src/drivers/incott_receiver.cpp -o build/incott_diagnostic_test.exe
 	./build/incott_diagnostic_test.exe
 	$(CXX) $(CXXFLAGS) tests/astro_driver_test.cpp src/drivers/astro.cpp -o build/astro_driver_test.exe
 	./build/astro_driver_test.exe

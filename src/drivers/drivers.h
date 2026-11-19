@@ -9,8 +9,11 @@
 #include "../devices.h"
 #include "../hid.h"
 
+class IncottReceiverMonitor;
+
 struct PollContext
 {
+    IncottReceiverMonitor* incottMonitor = nullptr;  // Windows worker-owned; null for one-shot/Linux polls
     std::vector<HidColl> colls;
     std::set<std::pair<USHORT, USHORT>> claimed;
     std::set<std::wstring> btContainers; // container ids PollBluetooth already reported

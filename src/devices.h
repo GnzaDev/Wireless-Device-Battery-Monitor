@@ -23,6 +23,8 @@ struct DeviceStatus {
 
 // Queries every supported device. Blocking (can take a second or two); call from a worker thread.
 std::vector<DeviceStatus> PollAllDevices();
+class IncottReceiverMonitor;
+std::vector<DeviceStatus> PollAllDevices(IncottReceiverMonitor* monitor);
 
 // Prints every HID collection (for adding support for new devices).
 std::wstring DumpHidCollections();

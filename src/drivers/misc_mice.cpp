@@ -60,6 +60,8 @@
 #include "drivers.h"
 #include "xenta_protocol.h"
 #include "ardor_fury_v2_protocol.h"
+#include "incott_protocol.h"
+#include "incott_receiver.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -450,20 +452,27 @@ static std::wstring IncottIoResult(bool ok) {
 // [09][battery|charge][dpi<<4|rate][flags]. Bit 7 of flags is a profile-switch event, not battery status.
 // Unlike a feature reply, an input push has no 89 command echo before the battery.
 bool ParseIncottPush(const std::vector<BYTE>& r, BYTE& battery) {
-    if (r.size() < 4 || r[0] != 0x09 || (r[1] & 0x7F) > 100) return false;
-    // The web driver treats only bit 7 as a profile-switch event. Other bits are valid telemetry:
-    // a G23 V2 Pro 8K capture has flags=08 (09 2A 20 08 00 1F 1F 01 ...), battery=42%.
-    if ((r[2] & 0x0F) > 6 || (r[2] >> 4) > 5 || (r[3] & 0x80) != 0) return false;
-    if ((r[1] | r[2] | r[3]) == 0) return false;  // empty receiver status, not a real 0% reading
-    battery = r[1];
-    return true;
+    return incott_protocol::ParseStatus(r, battery);
 }
 
 void PollIncott(PollContext& ctx, std::wstring* trace = nullptr) {
+    if (ctx.incottMonitor) {
+        std::vector<HidColl> allowed;
+        if (!ctx.IsClaimed(0x093A, 0x522C))
+            for (const HidColl* c : ctx.Find(0x093A, 0x522C, [](const HidColl& c) {
+                     return c.page() == 0xFF05 && c.usage() == 1 && c.featLen() >= 9 && c.inLen() >= 4;
+                 })) allowed.push_back(*c);
+        ctx.incottMonitor->Sync(allowed);  // after IgnoreDevices filtering and Wraith model detection
+    }
     for (USHORT pid : { (USHORT)0x522C, (USHORT)0x622C }) {
         if (trace) *trace += L"\n093A:" + Hex4(pid) + L"\n";
         if (ctx.IsClaimed(0x093A, pid)) {
             if (trace) *trace += L"Skipped: claimed by Wraith model detection.\n";
+            continue;
+        }
+        DeviceStatus latest;
+        if (pid == 0x522C && ctx.incottMonitor && ctx.incottMonitor->Latest(latest)) {
+            ctx.Add(latest, 0x093A, pid);
             continue;
         }
         auto colls = ctx.Find(0x093A, pid, [](const HidColl& c) { return c.page() == 0xFF05 && c.usage() == 1 && c.featLen() >= 9; });
@@ -478,7 +487,7 @@ void PollIncott(PollContext& ctx, std::wstring* trace = nullptr) {
             // Read-only access to this vendor collection: never open the keyboard/mouse input collections.
             HidDev input;
             bool listening = false;
-            if (pid == 0x522C && c->inLen() >= 4) {
+            if (!ctx.incottMonitor && pid == 0x522C && c->inLen() >= 4) {
                 listening = input.OpenReadOnly(*c);
                 if (trace) *trace += L"OpenReadOnly (passive status): " + IncottIoResult(listening) + L"\n";
             }
@@ -532,6 +541,7 @@ void PollIncott(PollContext& ctx, std::wstring* trace = nullptr) {
                 if (trace) *trace += L"No valid Incott battery within the 900 ms collection budget.\n";
                 continue;
             }
+            if (ctx.incottMonitor && pid == 0x522C) ctx.incottMonitor->Remember(battery);
             int pct = battery & 0x7F;
             if (trace) *trace += L"Accepted: " + std::to_wstring(pct) + L"%, charging=" +
                 std::to_wstring((battery & 0x80) != 0) + L"\n";

@@ -197,5 +197,24 @@ int main() {
     Contains(trace, L"Using passive status push");
     Contains(trace, L"Accepted: 42%");
 
-    puts("Incott diagnostic and passive fallback: 20 scenarios passed");
+    // The windowed worker supplies a persistent monitor; no second temporary input handle is opened.
+    IncottReceiverMonitor monitor;
+    ctx = Context(); trace.clear(); getOk = false;
+    ctx.incottMonitor = &monitor;
+    PollIncott(ctx, &trace);
+    assert(ctx.out.empty() && inputOpens == 1 && inputReads == 0);
+    pushes = {captured};  // arrives between full polls, not inside the old polling window
+    DeviceStatus update;
+    assert(monitor.ReadPending(update) && update.percent == 42);
+
+    ctx = Context(); ctx.incottMonitor = &monitor;
+    PollIncott(ctx);
+    assert(ctx.out.size() == 1 && ctx.out[0].percent == 42 && sends == 0 && inputOpens == 0);
+
+    ctx = Context(); ctx.incottMonitor = &monitor;
+    ctx.Claim(0x093A, 0x522C);  // Wraith model detection must prevent any persistent reader/cache use
+    PollIncott(ctx);
+    assert(ctx.out.empty() && !monitor.Latest(update) && inputOpens == 0);
+
+    puts("Incott diagnostic, fallback and worker integration: 23 scenarios passed");
 }

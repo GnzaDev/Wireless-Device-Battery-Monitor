@@ -192,13 +192,18 @@ WirelessBattery.exe --demo     # sample devices of every brand instead of real o
 WirelessBattery.exe --quit     # close the running instance
 ```
 
-**Incott 8K receiver (experimental in this fork):** close the Incott web configurator, wake the mouse,
-then run `WirelessBattery.exe --debug-incott`. The trace is saved to `%TEMP%\WirelessBattery-incott-debug.txt`.
-The receiver's vendor input collection is opened before the existing status query, so pushed battery
-reports can be queued during the query. Feature reads and passive listening share one 900 ms budget
-per matching collection. No settings are changed. A push arriving outside this window is missed;
-this is not a persistent listener. A live G23 V2 Pro 8K push (`09 2A 20 08 00 1F 1F 01 ...`)
-was verified as 42% battery; polling can still miss pushes outside the listen window.
+**Incott 8K receiver (experimental in this fork):** close the Incott web configurator, start the app,
+and wake the mouse. The Windows tray/widget worker keeps only the recognized receiver's vendor input
+collection open between full device polls. It checks queued status every 250 ms and updates only the
+Incott entry when battery or charging changes; it does not change mouse settings. The mouse appears
+once its first valid report arrives, which may take a while. After 90 seconds without a report, its
+last value is dimmed as asleep (the "Hide last known / asleep devices" option can hide it).
+Device removal/ignore filtering closes the reader; refresh/resume retries access, and exit releases it.
+The G23 V2 Pro 8K was verified showing 42% alongside HyperX in the running app's menu.
+
+For a one-shot trace, run `WirelessBattery.exe --debug-incott`; it saves
+`%TEMP%\WirelessBattery-incott-debug.txt`. Unlike the running app, one-shot diagnostics and `--list`
+listen only within a 900 ms collection budget, so they can still miss a delayed push.
 
 **Device not shown?** Right-click the widget or tray icon and choose **Request support for a device...**. Pick the device, check
 what will be sent (it is shown word for word: the device name, its type, its USB/HID ids and interface layout, and your optional

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "drivers/incott_receiver.h"
 #include "i18n.h"
 #include "labels.h"
 #include "report.h"
@@ -24,6 +25,7 @@ namespace {
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT WM_RESULTS = WM_APP + 2;
 constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
+constexpr UINT WM_INCOTT_RESULTS = WM_APP + 4;
 constexpr UINT_PTR TIMER_DEBOUNCE = 1;
 constexpr UINT_PTR TIMER_WIDGET = 2;
 constexpr DWORD POLL_INTERVAL_MS = 60 * 1000;
@@ -483,7 +485,7 @@ void UpdateWidget() {
     widget::SetItems(items, tip);
 }
 
-void OnResults(std::vector<DeviceStatus>& results) {
+void OnResults(std::vector<DeviceStatus>& results, bool partial = false) {
     std::map<std::wstring, bool> seen;
     for (auto& s : results) {
         auto& e = g_entries[s.key];
@@ -493,6 +495,11 @@ void OnResults(std::vector<DeviceStatus>& results) {
         e.lastSeen = GetTickCount64();
         seen[s.key] = true;
         ApplyEntry(e);
+    }
+    if (partial) {  // a receiver push updates only its own entry, never removes other devices
+        UpdatePlaceholder();
+        UpdateWidget();
+        return;
     }
     for (auto it = g_entries.begin(); it != g_entries.end();) {
         auto& e = it->second;
@@ -778,12 +785,30 @@ DWORD WINAPI Worker(LPVOID) {
     constexpr DWORD startupPollDelays[] = { 3000, 7000, 15000 };
     size_t startupPoll = 0;
     HANDLE events[2] = { g_stopEvt, g_refreshEvt };
+    IncottReceiverMonitor incott;  // same worker owns the handles and cache through shutdown
     for (;;) {
-        auto* v = new std::vector<DeviceStatus>(g_demo ? DemoDevices() : PollAllDevices());
+        auto* v = new std::vector<DeviceStatus>(g_demo ? DemoDevices() : PollAllDevices(&incott));
+        DeviceStatus changed;
+        if (!g_demo && incott.ReadPending(changed)) {
+            auto it = std::find_if(v->begin(), v->end(), [&](const DeviceStatus& s) { return s.key == changed.key; });
+            if (it == v->end()) v->push_back(changed); else *it = changed;
+        }
         if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
         DWORD delay = POLL_INTERVAL_MS;
         if (startupPoll < ARRAYSIZE(startupPollDelays)) delay = startupPollDelays[startupPoll++];
-        if (WaitForMultipleObjects(2, events, FALSE, delay) == WAIT_OBJECT_0) return 0;
+        const auto due = GetTickCount64() + delay;
+        for (;;) {
+            auto now = GetTickCount64();
+            if (now >= due) break;
+            DWORD wait = (DWORD)std::min<ULONGLONG>(250, due - now);
+            DWORD event = WaitForMultipleObjects(2, events, FALSE, wait);
+            if (event == WAIT_OBJECT_0 || event == WAIT_FAILED) return 0;
+            if (event == WAIT_OBJECT_0 + 1) { incott.Reopen(); break; }
+            if (!g_demo && incott.ReadPending(changed)) {
+                auto* update = new std::vector<DeviceStatus>{changed};
+                if (!PostMessageW(g_hwnd, WM_INCOTT_RESULTS, 0, (LPARAM)update)) delete update;
+            }
+        }
     }
 }
 
@@ -798,9 +823,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     switch (msg) {
+        case WM_INCOTT_RESULTS:
         case WM_RESULTS: {
             auto* v = reinterpret_cast<std::vector<DeviceStatus>*>(lp);
-            OnResults(*v);
+            OnResults(*v, msg == WM_INCOTT_RESULTS);
             delete v;
             return 0;
         }
@@ -981,7 +1007,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
         DispatchMessageW(&m);
     }
     // drain results posted after shutdown started
-    while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<std::vector<DeviceStatus>*>(m.lParam);
+    for (UINT id : { WM_RESULTS, WM_INCOTT_RESULTS })
+        while (PeekMessageW(&m, nullptr, id, id, PM_REMOVE)) delete reinterpret_cast<std::vector<DeviceStatus>*>(m.lParam);
     if (notify) UnregisterDeviceNotification(notify);
     if (g_worker) CloseHandle(g_worker);
     ReleaseMutex(mutex);
